@@ -17,7 +17,7 @@ To install `battinfo`:
 
 1.  Clone the GitHub repository:
     ```bash
-    git clone https://github.com/yourusername/battinfo.git # Replace yourusername
+    git clone https://github.com/viztini/battinfo.git
     ```
 2.  Change into the project directory:
     ```bash
