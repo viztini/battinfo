@@ -23,7 +23,11 @@ To install `battinfo`:
     ```bash
     cd battinfo
     ```
-3.  Run the installation script:
+3.  Make the installation script executable
+     ```bash
+    chmod +x install.sh
+    ```
+R.  Run the installation script:
     ```bash
     ./install.sh
     ```
