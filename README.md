@@ -27,7 +27,7 @@ To install `battinfo`:
      ```bash
     chmod +x install.sh
     ```
-R.  Run the installation script:
+4.  Run the installation script:
     ```bash
     ./install.sh
     ```
