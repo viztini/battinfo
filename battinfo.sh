@@ -1,117 +1,88 @@
 #!/bin/bash
 
 # ANSI color codes
-GREEN="\e[1;32m"
-YELLOW="\e[1;33m"
-RED="\e[1;31m"
-BLUE="\e[1;34m"
-MAGENTA="\e[1;35m"
-CYAN="\e[1;36m"
-WHITE="\e[1;37m"
-NC="\e[0m" # No Color
+G="\e[1;32m"; Y="\e[1;33m"; R="\e[1;31m"; B="\e[1;34m"
+C="\e[1;36m"; W="\e[1;37m"; NC="\e[0m"
 
-# Find the first battery available
-BATTERY_NAME=$(ls /sys/class/power_supply/ | grep -E '^BAT[0-9]+$' | head -n 1)
-BATTERY_PATH="/sys/class/power_supply/$BATTERY_NAME"
+# Find battery
+BAT_NAME=$(ls /sys/class/power_supply/ | grep -E '^BAT[0-9]+$' | head -n 1)
+BAT_PATH="/sys/class/power_supply/$BAT_NAME"
 
-# Check if battery exists
-if [ -z "$BATTERY_NAME" ] || [ ! -d "$BATTERY_PATH" ]; then
-    echo -e "${RED}Error:${NC} No battery (e.g., BAT0, BAT1) found in /sys/class/power_supply/." >&2
-    echo -e "${RED}Please ensure you have a battery or specify its path if it's named differently.${NC}" >&2
+if [ -z "$BAT_NAME" ]; then
+    echo -e "${R}Error:${NC} No battery found." >&2
     exit 1
 fi
 
-# Function to read battery info
-get_battery_info() {
-    local file="$1"
-    cat "$BATTERY_PATH/$file" 2>/dev/null
+# Helper to read sysfs files safely
+read_val() {
+    [[ -f "$BAT_PATH/$1" ]] && cat "$BAT_PATH/$1" || echo ""
 }
 
-# Read raw values
-CAPACITY=$(get_battery_info "capacity")
-STATUS=$(get_battery_info "status")
-MANUFACTURER=$(get_battery_info "manufacturer")
-MODEL_NAME=$(get_battery_info "model_name")
-TECHNOLOGY=$(get_battery_info "technology")
-VOLTAGE_NOW=$(get_battery_info "voltage_now")
-CURRENT_NOW=$(get_battery_info "current_now")
-POWER_NOW=$(get_battery_info "power_now")
-CYCLE_COUNT=$(get_battery_info "cycle_count")
-PRESENT_RATE=$(get_battery_info "present_rate")
-TEMP=$(get_battery_info "temp")
+# Helper for micro-unit conversion (uV/uA/uW to V/A/W)
+conv() {
+    local val=$1
+    [[ -z "$val" || "$val" -eq 0 ]] && echo "N/A" && return
+    printf "%.2f" "$(echo "scale=2; $val / 1000000" | bc -l 2>/dev/null || echo "0")"
+}
 
-# Try energy values first, then charge values
-DESIGN_CAP=$(get_battery_info "energy_full_design")
-FULL_CHARGE_CAP=$(get_battery_info "energy_full")
+# Data Retrieval
+CAPACITY=$(read_val "capacity")
+STATUS=$(read_val "status")
+MANU=$(read_val "manufacturer")
+MODEL=$(read_val "model_name")
+VOLT=$(conv $(read_val "voltage_now"))
+POWER=$(conv $(read_val "power_now"))
+TEMP_RAW=$(read_val "temp")
+TEMP=$( [[ -n "$TEMP_RAW" ]] && echo "scale=1; $TEMP_RAW / 10" | bc -l || echo "N/A" )
+CYCLES=$(read_val "cycle_count")
+
+# Capacity/Degradation Logic
+DESIGN=$(read_val "energy_full_design")
+FULL=$(read_val "energy_full")
 UNIT="Wh"
 
-if [ -z "$DESIGN_CAP" ] || [ -z "$FULL_CHARGE_CAP" ]; then
-    DESIGN_CAP=$(get_battery_info "charge_full_design")
-    FULL_CHARGE_CAP=$(get_battery_info "charge_full")
+if [[ -z "$DESIGN" ]]; then
+    DESIGN=$(read_val "charge_full_design")
+    FULL=$(read_val "charge_full")
     UNIT="Ah"
 fi
 
-# Convert values to more readable units if available
-if [ -n "$VOLTAGE_NOW" ] && [ "$VOLTAGE_NOW" -gt 0 ]; then
-    VOLTAGE_NOW=$(echo "scale=2; $VOLTAGE_NOW / 1000000" | bc) # uV to V
-fi
-if [ -n "$CURRENT_NOW" ] && [ "$CURRENT_NOW" -gt 0 ]; then
-    CURRENT_NOW=$(echo "scale=2; $CURRENT_NOW / 1000000" | bc) # uA to A
-fi
-if [ -n "$POWER_NOW" ] && [ "$POWER_NOW" -gt 0 ]; then
-    POWER_NOW=$(echo "scale=2; $POWER_NOW / 1000000" | bc) # uW to W
-fi
-if [ -n "$PRESENT_RATE" ] && [ "$PRESENT_RATE" -gt 0 ]; then
-    PRESENT_RATE=$(echo "scale=2; $PRESENT_RATE / 1000000" | bc) # uW to W or uA to A
-fi
-if [ -n "$TEMP" ] && [ "$TEMP" -gt 0 ]; then
-    TEMP=$(echo "scale=1; $TEMP / 1000" | bc) # mC to C
+# Convert Design/Full to readable units
+DESIGN_READABLE=$(conv "$DESIGN")
+FULL_READABLE=$(conv "$FULL")
+
+# Calculate Health/Degradation
+HEALTH="N/A"; HEALTH_COLOR=$W
+if [[ -n "$DESIGN" && "$DESIGN" -gt 0 && -n "$FULL" ]]; then
+    HEALTH=$(echo "scale=1; ($FULL / $DESIGN) * 100" | bc -l)
+    DEGRADATION=$(echo "100 - $HEALTH" | bc -l)
+    
+    if (( $(echo "$HEALTH > 80" | bc -l) )); then HEALTH_COLOR=$G
+    elif (( $(echo "$HEALTH > 50" | bc -l) )); then HEALTH_COLOR=$Y
+    else HEALTH_COLOR=$R; fi
 fi
 
-# Calculate degradation
-DEGRADATION_PERCENT="N/A"
-if (( $(echo "$DESIGN_CAP > 0" | bc -l) )) && (( $(echo "$FULL_CHARGE_CAP > 0" | bc -l) )); then
-    DEGRADATION_PERCENT=$(echo "scale=2; (1 - ($FULL_CHARGE_CAP / $DESIGN_CAP)) * 100" | bc)
-fi
+# Visual Progress Bar
+BAR_WIDTH=20
+FILLED=$(( CAPACITY * BAR_WIDTH / 100 ))
+EMPTY=$(( BAR_WIDTH - FILLED ))
+BAR="${C}[${G}$(printf '%*s' "$FILLED" '' | tr ' ' '#')${W}$(printf '%*s' "$EMPTY" '' | tr ' ' '-')${C}]${NC}"
 
-# Determine degradation color
-DEGRADATION_COLOR="$WHITE"
-if (( $(echo "$DEGRADATION_PERCENT != \"N/A\" && $DEGRADATION_PERCENT >= 0" | bc -l) )); then
-    DEGRADATION_COLOR="$GREEN"
-    if (( $(echo "$DEGRADATION_PERCENT >= 20" | bc -l) )); then
-        DEGRADATION_COLOR="$YELLOW"
-    fi
-    if (( $(echo "$DEGRADATION_PERCENT >= 40" | bc -l) )); then
-        DEGRADATION_COLOR="$RED"
-    fi
-fi
-
-# Generate ASCII battery graph
-GRAPH_LENGTH=20
-FILLED_BARS=$(( CAPACITY * GRAPH_LENGTH / 100 ))
-EMPTY_BARS=$(( GRAPH_LENGTH - FILLED_BARS ))
-
-BATTERY_GRAPH="${CYAN}["
-for (( i=0; i<FILLED_BARS; i++ )); do BATTERY_GRAPH+="#"; done
-for (( i=0; i<EMPTY_BARS; i++ )); do BATTERY_GRAPH+="-"; done
-BATTERY_GRAPH+="]${NC}"
-
-# Output information with colors and improved formatting
-echo -e "${BLUE}┌───────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}│${NC} ${YELLOW}Battery Information (${BATTERY_NAME}):${NC}             ${BLUE}│${NC}"
-echo -e "${BLUE}├───────────────────────────────────────────────────┤${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Manufacturer:${NC} ${WHITE}${MANUFACTURER:-N/A}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Model:       ${NC} ${WHITE}${MODEL_NAME:-N/A}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Technology:  ${NC} ${WHITE}${TECHNOLOGY:-N/A}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Status:      ${NC} ${WHITE}${STATUS:-N/A}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Capacity:    ${NC} ${WHITE}${CAPACITY:-N/A}%${NC} ${BATTERY_GRAPH}"
-echo -e "${BLUE}│${NC}   ${GREEN}Voltage:     ${NC} ${WHITE}${VOLTAGE_NOW:-N/A} V${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Current:     ${NC} ${WHITE}${CURRENT_NOW:-N/A} A${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Power:       ${NC} ${WHITE}${POWER_NOW:-N/A} W${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Rate:        ${NC} ${WHITE}${PRESENT_RATE:-N/A} W/A${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Temperature: ${NC} ${WHITE}${TEMP:-N/A} °C${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Design Cap:  ${NC} ${WHITE}${DESIGN_CAP:-N/A} ${UNIT}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Full Charge: ${NC} ${WHITE}${FULL_CHARGE_CAP:-N/A} ${UNIT}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Cycle Count: ${NC} ${WHITE}${CYCLE_COUNT:-N/A}${NC}"
-echo -e "${BLUE}│${NC}   ${GREEN}Degradation: ${DEGRADATION_COLOR}${DEGRADATION_PERCENT:-N/A}%${NC}"
-echo -e "${BLUE}└───────────────────────────────────────────────────┘${NC}"
+# Output Formatting
+clear
+echo -e "${B}┌───────────────────────────────────────────────────┐${NC}"
+echo -e "${B}│${NC}  ${Y}BATTERY REPORT: ${W}$BAT_NAME${NC} $(printf '%*s' $((27 - ${#BAT_NAME})) '')${B}│${NC}"
+echo -e "${B}├───────────────────────────────────────────────────┤${NC}"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Manufacturer:" "${MANU:-Unknown}"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Model:" "${MODEL:-Unknown}"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Status:" "${STATUS:-Unknown}"
+printf "${B}│${NC}  ${G}%-15s${NC} %-5s %-26s ${B}│${NC}\n" "Charge:" "${CAPACITY}%" "$BAR"
+echo -e "${B}├───────────────────────────────────────────────────┤${NC}"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Voltage:" "${VOLT} V"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Draw/Power:" "${POWER} W"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Temperature:" "${TEMP}°C"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Cycles:" "${CYCLES:-0}"
+echo -e "${B}├───────────────────────────────────────────────────┤${NC}"
+printf "${B}│${NC}  ${G}%-15s${NC} %-32s ${B}│${NC}\n" "Design Cap:" "$DESIGN_READABLE $UNIT"
+printf "${B}│${NC}  ${G}%-15s${NC} ${HEALTH_COLOR}%-32s${NC} ${B}│${NC}\n" "Health:" "${HEALTH}% (of design)"
+echo -e "${B}└───────────────────────────────────────────────────┘${NC}"
