@@ -1,6 +1,6 @@
 # battinfo
 
-A command-line tool to display detailed battery information, including health/degradation, status, and other relevant metrics.
+A Linux command-line tool to display detailed battery information, including health/degradation, status, and other relevant metrics.
 
 ## Features
 
